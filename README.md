@@ -36,6 +36,6 @@ This tool extracts classical voice biomarkers from audio and predicts the probab
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/24ume096-star/perkinson_project/
-cd parkinson-voice-app
+git clone https://github.com/24ume096-star/perkinson_project.git
+cd parkinson_project
 
