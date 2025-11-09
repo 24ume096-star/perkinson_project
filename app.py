@@ -1,56 +1,100 @@
-import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
+import streamlit as st
+from audio_recorder_streamlit import audio_recorder
 import joblib
-import warnings
-warnings.filterwarnings("ignore")
+import numpy as np
+import soundfile as sf
+import librosa
+from feature import extract_parkinson_features
+import io
 
-# Define the local file path for the dataset
-DATA_URL = "https://archive.ics.uci.edu/ml/machine-learning-databases/parkinsons/parkinsons.data"
-MODEL_PATH = 'parkinsons_model.pkl'
 
-def train_and_save_model():
-    # 1. Load Data
+# CONFIG
+
+MODEL_PATH = "parkinsons_model_22.pkl"
+st.set_page_config(page_title="Parkinson's Voice Detection", layout="centered")
+
+
+@st.cache_resource
+def load_model():
     try:
-        df = pd.read_csv(DATA_URL)
-        print("Dataset loaded successfully.")
-    except Exception as e:
-        print(f"Error loading data: {e}. Please ensure you have internet access.")
-        return
+        return joblib.load(MODEL_PATH)
+    except:
+        st.error("❌ Model not found. Train and save 'parkinsons_model_22.pkl' first.")
+        return None
 
-    # 2. Select Features (Using a subset of key acoustic features for training)
-    # The full dataset has 22 features, we use a few to demonstrate the process.
-    # For higher accuracy, use all features or run feature selection.
-    features = [
-        'MDVP:Fo(Hz)',  # Fundamental Frequency (Pitch)
-        'MDVP:Jitter(%)',
-        'MDVP:Shimmer',
-        'MDVP:APQ',     # Amplitude Perturbation Quotient (Shimmer related)
-        'NHR',          # Noise-to-Harmonics Ratio
-        'HNR'           # Harmonics-to-Noise Ratio
-    ]
-    
-    # Target label: 'status' (0 = healthy, 1 = Parkinson's)
-    X = df[features]
-    y = df['status']
+model = load_model()
+if model is None:
+    st.stop()
 
-    # 3. Preprocessing: Scaling
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
 
-    # Save the fitted scaler alongside the model, as it must be applied to live input
-    joblib.dump(scaler, 'parkinsons_scaler.pkl')
+# APP UI
 
-    # 4. Train Model
-    model = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
-    model.fit(X_scaled, y)
+st.title("🎙️ Parkinson’s Voice Screening")
+st.write("""
+Hold **'Aaaaaah'** for 3–4 seconds and record your voice.  
+⚠ **Note:** This is a **screening tool**, not a medical diagnosis.
+""")
 
-    # 5. Save Model
-    joblib.dump(model, MODEL_PATH)
-    print(f"\nModel trained and saved as {MODEL_PATH}")
-    print(f"Scaler saved as parkinsons_scaler.pkl")
-    print(f"Model trained on {len(features)} features. Ensure app.py extracts the same {len(features)} features.")
 
-if __name__ == "__main__":
-    train_and_save_model()
+# AUDIO RECORDING
+
+audio_bytes = audio_recorder(
+    text="🎤 Click to Record",
+    sample_rate=16000
+)
+
+def preprocess_audio(audio_bytes):
+    """Trim silence and normalize amplitude"""
+    audio_buffer = io.BytesIO(audio_bytes)  # ✅ io is available now
+    y, sr = sf.read(audio_buffer)
+
+    # Mono
+    if len(y.shape) > 1:
+        y = np.mean(y, axis=1)
+
+    # Trim leading/trailing silence
+    y, _ = librosa.effects.trim(y)
+
+    # Normalize amplitude
+    y = librosa.util.normalize(y)
+
+    # Convert back to bytes for feature extraction
+    buffer = io.BytesIO()
+    sf.write(buffer, y, sr, format="WAV")
+    return buffer.getvalue()
+
+if audio_bytes:
+    st.audio(audio_bytes, format="audio/wav")
+
+    if st.button("🔍 Analyze Voice"):
+        try:
+            st.info("Processing audio...")
+            processed_bytes = preprocess_audio(audio_bytes)
+
+            # Extract features
+            features = extract_parkinson_features(processed_bytes)
+
+            # Predict probability
+            prob = model.predict_proba(features)[0][1] * 100
+
+            # Display results with probability-based risk
+            st.subheader("📊 Result")
+            st.metric("Parkinson's Probability (%)", f"{prob:.2f}%")
+
+            if prob < 30:
+                st.success(f"🟢 Low Risk — Probability: {prob:.2f}%")
+            elif prob < 70:
+                st.warning(f"🟡 Moderate Risk — Probability: {prob:.2f}%")
+            else:
+                st.error(f"🔴 High Risk — Probability: {prob:.2f}%")
+
+        except Exception as e:
+            st.error(f"Error analyzing voice: {e}")
+
+# FOOTER
+
+st.markdown("""
+---
+⚠ **Disclaimer:** This application is for educational/screening purposes only.  
+Consult a qualified physician for medical evaluation.
+""")
